@@ -1,0 +1,49 @@
+import firebase_admin
+from firebase_admin import credentials, firestore
+from datetime import datetime
+
+# Initialize Firebase
+cred = credentials.Certificate("serviceAccountKey.json")
+firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+
+def mark_attendance(name):
+    today = datetime.now().strftime("%Y-%m-%d")
+    time_now = datetime.now().strftime("%H:%M:%S")
+
+    # Document path: attendance/YYYY-MM-DD/Name
+    doc_ref = db.collection('attendance').document(today).collection('records').document(name)
+
+    doc_ref.set({
+        'name': name,
+        'date': today,
+        'time': time_now
+    })
+
+    print(f"✅ Attendance marked for {name} at {time_now}.")
+
+def get_attendance(date):
+    records = db.collection('attendance').document(date).collection('records').stream()
+    print(f"\n📋 Attendance on {date}:")
+    for record in records:
+        print(record.to_dict())
+
+if __name__ == "__main__":
+    while True:
+        print("\n1. Mark Attendance")
+        print("2. View Attendance by Date")
+        print("3. Exit")
+
+        choice = input("Select an option: ")
+
+        if choice == '1':
+            name = input("Enter Name: ")
+            mark_attendance(name)
+        elif choice == '2':
+            date = input("Enter Date (YYYY-MM-DD): ")
+            get_attendance(date)
+        elif choice == '3':
+            break
+        else:
+            print("❌ Invalid choice")
