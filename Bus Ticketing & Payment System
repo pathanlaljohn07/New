@@ -1,0 +1,382 @@
+# template.yaml
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Bus Ticketing and Payment System - Consolidated Deployment
+
+Parameters:
+  BusesTableName:
+    Type: String
+    Default: BusSchedulesTable # Renamed to be more descriptive
+  BookingsTableName:
+    Type: String
+    Default: BusBookingsTable  # Renamed to be more descriptive
+
+Resources:
+  # DynamoDB Tables
+  BusesTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: !Ref BusesTableName
+      PrimaryKey:
+        Name: busId
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      # For production, consider adding a GSI for efficient searches by origin/destination/date.
+      # GlobalSecondaryIndexes:
+      #   - IndexName: RouteDateIndex
+      #     KeySchema:
+      #       - AttributeName: origin
+      #         KeyType: HASH
+      #       - AttributeName: departureDate
+      #         KeyType: RANGE
+      #     Projection:
+      #       ProjectionType: ALL
+      #     ProvisionedThroughput:
+      #       ReadCapacityUnits: 5
+      #       WriteCapacityUnits: 5
+
+  BookingsTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: !Ref BookingsTableName
+      PrimaryKey:
+        Name: bookingId
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      # For production, consider adding a GSI for users to view their bookings.
+      # GlobalSecondaryIndexes:
+      #   - IndexName: UserBookingIndex
+      #     KeySchema:
+      #       - AttributeName: userId
+      #         KeyType: HASH
+      #     Projection:
+      #       ProjectionType: ALL
+      #     ProvisionedThroughput:
+      #       ReadCapacityUnits: 5
+      #       WriteCapacityUnits: 5
+
+  # API Gateway Definition (Shared for all functions)
+  BusTicketingApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors: # Enable CORS for frontend interaction
+        AllowOrigin: "'*'" # Be more specific in production (e.g., 'https://yourfrontend.com')
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+
+  # Lambda Functions with Inline Code
+  SearchBusesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: SearchBusesFunction
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 30
+      CodeUri: s3://aws-sam-cli-uploaded-artifacts-prod/a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6 # Placeholder - SAM CLI will upload this
+      InlineCode: |
+        import json
+        import os
+        import boto3
+        from botocore.exceptions import ClientError
+
+        dynamodb = boto3.resource('dynamodb')
+        buses_table = dynamodb.Table(os.environ.get('BUSES_TABLE_NAME'))
+
+        def lambda_handler(event, context):
+            try:
+                query_params = event.get('queryStringParameters', {})
+                origin = query_params.get('origin')
+                destination = query_params.get('destination')
+                travel_date = query_params.get('date') # Format: YYYY-MM-DD
+
+                if not all([origin, destination, travel_date]):
+                    return {
+                        'statusCode': 400,
+                        'headers': { 'Content-Type': 'application/json' },
+                        'body': json.dumps({'message': 'Missing origin, destination, or date.'})
+                    }
+
+                # Using scan for simplicity; consider GSI for large datasets.
+                response = buses_table.scan(
+                    FilterExpression=boto3.dynamodb.conditions.Attr('origin').eq(origin) &
+                                     boto3.dynamodb.conditions.Attr('destination').eq(destination) &
+                                     boto3.dynamodb.conditions.Attr('departureDate').eq(travel_date)
+                )
+                buses = response.get('Items', [])
+
+                return {
+                    'statusCode': 200,
+                    'headers': { 'Content-Type': 'application/json' },
+                    'body': json.dumps({'buses': buses})
+                }
+
+            except ClientError as e:
+                print(f"DynamoDB error: {e}")
+                return {
+                    'statusCode': 500,
+                    'headers': { 'Content-Type': 'application/json' },
+                    'body': json.dumps({'message': 'Error searching buses', 'error': str(e)})
+                }
+            except Exception as e:
+                print(f"Error: {e}")
+                return {
+                    'statusCode': 500,
+                    'headers': { 'Content-Type': 'application/json' },
+                    'body': json.dumps({'message': 'An unexpected error occurred', 'error': str(e)})
+                }
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !GetAtt BusesTable.TableName
+      Environment:
+        Variables:
+          BUSES_TABLE_NAME: !Ref BusesTableName
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /buses
+            Method: GET
+            RestApiId: !Ref BusTicketingApi
+
+  InitiateBookingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: InitiateBookingFunction
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 30
+      CodeUri: s3://aws-sam-cli-uploaded-artifacts-prod/a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6 # Placeholder
+      InlineCode: |
+        import json
+        import os
+        import boto3
+        import uuid
+        import time # For current timestamp
+
+        dynamodb = boto3.resource('dynamodb')
+        bookings_table = dynamodb.Table(os.environ.get('BOOKINGS_TABLE_NAME'))
+        buses_table = dynamodb.Table(os.environ.get('BUSES_TABLE_NAME'))
+
+        # stripe_secret_key = os.environ.get('STRIPE_SECRET_KEY') # Retrieve securely from env/Secrets Manager
+        # import stripe
+        # if stripe_secret_key:
+        #     stripe.api_key = stripe_secret_key
+
+        def lambda_handler(event, context):
+            try:
+                body = json.loads(event['body'])
+                bus_id = body.get('busId')
+                selected_seats = body.get('selectedSeats')
+                passenger_details = body.get('passengerDetails')
+                user_id = body.get('userId', 'anonymous')
+
+                if not all([bus_id, selected_seats, passenger_details]):
+                    return {
+                        'statusCode': 400,
+                        'headers': { 'Content-Type': 'application/json' },
+                        'body': json.dumps({'message': 'Missing required booking details.'})
+                    }
+
+                bus_details = buses_table.get_item(Key={'busId': bus_id}).get('Item')
+                if not bus_details:
+                    return {
+                        'statusCode': 404,
+                        'headers': { 'Content-Type': 'application/json' },
+                        'body': json.dumps({'message': 'Bus not found.'})
+                    }
+
+                seat_price = bus_details.get('price', 0)
+                amount_to_charge = len(selected_seats) * seat_price * 100 # In cents
+
+                booking_id = str(uuid.uuid4())
+                booking_item = {
+                    'bookingId': booking_id,
+                    'userId': user_id,
+                    'busId': bus_id,
+                    'selectedSeats': selected_seats,
+                    'passengerDetails': passenger_details,
+                    'bookingStatus': 'PendingPayment',
+                    'amount': amount_to_charge,
+                    'currency': 'INR',
+                    'bookingDate': int(time.time() * 1000) # Milliseconds timestamp
+                }
+
+                # In a real system, implement atomic seat reservation (e.g., DynamoDB transactions).
+                # This simple put_item just creates the booking.
+                bookings_table.put_item(Item=booking_item)
+
+                # --- Conceptual Payment Gateway Interaction (Stripe example) ---
+                # client_secret = None
+                # if stripe_secret_key:
+                #     try:
+                #         payment_intent = stripe.PaymentIntent.create(
+                #             amount=amount_to_charge,
+                #             currency='inr',
+                #             metadata={'booking_id': booking_id},
+                #         )
+                #         client_secret = payment_intent.client_secret
+                #     except stripe.error.StripeError as e:
+                #         print(f"Stripe error: {e}")
+                #         bookings_table.update_item(
+                #             Key={'bookingId': booking_id},
+                #             UpdateExpression="SET bookingStatus = :s",
+                #             ExpressionAttributeValues={':s': 'PaymentGatewayError'}
+                #         )
+                #         return {
+                #             'statusCode': 500,
+                #             'headers': { 'Content-Type': 'application/json' },
+                #             'body': json.dumps({'message': 'Failed to create payment intent', 'error': str(e)})
+                #         }
+                # else:
+                #     # Dummy client secret if Stripe not configured
+                #     client_secret = f"pi_dummy_{booking_id}_secret"
+
+                # For this conceptual code, we use a dummy client_secret
+                dummy_client_secret = f"pi_dummy_{booking_id}_secret"
+
+                return {
+                    'statusCode': 200,
+                    'headers': { 'Content-Type': 'application/json' },
+                    'body': json.dumps({
+                        'bookingId': booking_id,
+                        'clientSecret': dummy_client_secret
+                    })
+                }
+
+            except Exception as e:
+                print(f"Error initiating booking: {e}")
+                return {
+                    'statusCode': 500,
+                    'headers': { 'Content-Type': 'application/json' },
+                    'body': json.dumps({'message': 'An unexpected error occurred', 'error': str(e)})
+                }
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !GetAtt BookingsTable.TableName
+        - DynamoDBReadPolicy:
+            TableName: !GetAtt BusesTable.TableName
+      Environment:
+        Variables:
+          BOOKINGS_TABLE_NAME: !Ref BookingsTableName
+          BUSES_TABLE_NAME: !Ref BusesTableName
+          # STRIPE_SECRET_KEY: !Sub "{{resolve:ssm:/bus-ticketing/stripe/secretKey}}" # Example for secure retrieval
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /bookings
+            Method: POST
+            RestApiId: !Ref BusTicketingApi
+
+  ProcessPaymentWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ProcessPaymentWebhookFunction
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 30
+      CodeUri: s3://aws-sam-cli-uploaded-artifacts-prod/a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6 # Placeholder
+      InlineCode: |
+        import json
+        import os
+        import boto3
+        # import stripe # You would install this if using Stripe
+
+        dynamodb = boto3.resource('dynamodb')
+        bookings_table = dynamodb.Table(os.environ.get('BOOKINGS_TABLE_NAME'))
+
+        # webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET') # Retrieve securely
+
+        def lambda_handler(event, context):
+            try:
+                # --- Webhook Signature Verification (CRITICAL for production) ---
+                # payload = event['body']
+                # sig_header = event['headers'].get('stripe-signature')
+                # try:
+                #     stripe_event = stripe.Webhook.construct_event(
+                #         payload, sig_header, webhook_secret
+                #     )
+                # except ValueError as e:
+                #     print(f"Invalid payload: {e}")
+                #     return {'statusCode': 400, 'body': json.dumps({'message': 'Invalid payload'})}
+                # except stripe.error.SignatureVerificationError as e:
+                #     print(f"Invalid signature: {e}")
+                #     return {'statusCode': 400, 'body': json.dumps({'message': 'Invalid signature'})}
+                # event_type = stripe_event['type']
+                # object_data = stripe_event['data']['object']
+                # booking_id = object_data.get('metadata', {}).get('booking_id')
+                # payment_intent_id = object_data.get('id')
+
+                # For this conceptual example, parse directly (DO NOT do this in production)
+                webhook_data = json.loads(event['body'])
+                event_type = webhook_data.get('type')
+                booking_id = webhook_data.get('bookingId') # Assuming your test webhook sends this
+                payment_intent_id = webhook_data.get('paymentIntentId') # Assuming your test webhook sends this
+
+                if not booking_id or not payment_intent_id:
+                    print("Missing bookingId or paymentIntentId in webhook data.")
+                    return {'statusCode': 400, 'body': json.dumps({'message': 'Missing booking ID or payment intent ID'})}
+
+                new_status = None
+                if event_type == 'payment_intent.succeeded':
+                    new_status = 'Confirmed'
+                    print(f"Payment Succeeded for Booking ID: {booking_id}")
+                    # Trigger SNS for email/SMS confirmation
+                elif event_type == 'payment_intent.payment_failed':
+                    new_status = 'PaymentFailed'
+                    print(f"Payment Failed for Booking ID: {booking_id}")
+                    # Potentially release reserved seats
+                else:
+                    print(f"Unhandled event type: {event_type}")
+                    return {'statusCode': 200, 'body': json.dumps({'message': 'Unhandled event type'})} # Acknowledge receipt
+
+                bookings_table.update_item(
+                    Key={'bookingId': booking_id},
+                    UpdateExpression="SET bookingStatus = :s, paymentIntentId = :pi",
+                    ExpressionAttributeValues={
+                        ':s': new_status,
+                        ':pi': payment_intent_id
+                    }
+                )
+
+                return {
+                    'statusCode': 200,
+                    'headers': { 'Content-Type': 'application/json' },
+                    'body': json.dumps({'message': 'Webhook processed successfully'})
+                }
+
+            except Exception as e:
+                print(f"Error processing webhook: {e}")
+                return {
+                    'statusCode': 500,
+                    'headers': { 'Content-Type': 'application/json' },
+                    'body': json.dumps({'message': 'Error processing webhook', 'error': str(e)})
+                }
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !GetAtt BookingsTable.TableName
+        # Add SNS Publish policy if sending notifications
+      Environment:
+        Variables:
+          BOOKINGS_TABLE_NAME: !Ref BookingsTableName
+          # STRIPE_WEBHOOK_SECRET: !Sub "{{resolve:ssm:/bus-ticketing/stripe/webhookSecret}}" # Example for secure retrieval
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /webhooks/payment
+            Method: POST
+            RestApiId: !Ref BusTicketingApi
+
+Outputs:
+  ApiGatewayEndpoint:
+    Description: "API Gateway endpoint URL for the backend"
+    Value: !Sub "https://${BusTicketingApi.Outputs.RootUrl}/Prod"
