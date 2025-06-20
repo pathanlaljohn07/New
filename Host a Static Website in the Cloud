@@ -1,86 +1,100 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>My Cloud Website</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      background-color: #f0f4f8;
-      margin: 0;
-      padding: 0;
-      text-align: center;
-    }
+# --- AWS S3 Static Website Hosting Setup Guide ---
+# This "code" represents a sequence of AWS CLI commands
+# to host a static website on Amazon S3.
 
-    header, footer {
-      background-color: #004466;
-      color: white;
-      padding: 1em 0;
-    }
+# --- Prerequisites ---
+# 1. An AWS Account.
+# 2. AWS CLI installed and configured with appropriate credentials
+#    (e.g., `aws configure`).
+# 3. Your static website files (HTML, CSS, JS, images, etc.)
+#    Example local website structure:
+#    my-website/
+#    ├── index.html
+#    ├── style.css
+#    └── images/
+#        └── logo.png
+#    Ensure you have an 'index.html' (your main page) and optionally 'error.html'
+#    (your custom 404 page).
 
-    main {
-      padding: 2em;
-    }
+# --- Configuration Variables (REPLACE THESE) ---
+# Replace with a globally unique name for your S3 bucket.
+# It's common practice to use your domain name if you plan to use one (e.g., www.example.com).
+BUCKET_NAME="your-unique-static-website-bucket-name"
 
-    a {
-      color: #ffeeaa;
-      text-decoration: none;
-      margin: 0 15px;
-      font-weight: bold;
-    }
+# Replace with your desired AWS region (e.g., us-east-1, eu-west-1, ap-south-1).
+AWS_REGION="your-aws-region"
 
-    button {
-      background-color: #007acc;
-      color: white;
-      border: none;
-      padding: 10px 20px;
-      font-size: 1rem;
-      cursor: pointer;
-      margin-top: 20px;
-    }
+# Replace with the path to your local website directory.
+LOCAL_WEBSITE_PATH="./my-website"
 
-    button:hover {
-      background-color: #005a99;
-    }
+# Your index document (e.g., index.html)
+INDEX_DOCUMENT="index.html"
 
-    #message {
-      margin-top: 15px;
-      font-weight: bold;
-      color: #006600;
-    }
-  </style>
-</head>
-<body>
+# Your custom error document (e.g., 404.html). Optional.
+ERROR_DOCUMENT="error.html" # Set to empty string "" if you don't have one
 
-  <header>
-    <h1>Welcome to My Cloud-Hosted Website 🌐</h1>
-    <nav>
-      <a href="#">Home</a>
-      <a href="#about">About</a>
-    </nav>
-  </header>
 
-  <main>
-    <p>This static website is hosted on the cloud using a storage bucket like AWS S3.</p>
-    <button onclick="showMessage()">Click Me</button>
-    <p id="message"></p>
+# --- Step 1: Create an S3 Bucket ---
+# The bucket name must be unique across all AWS accounts globally.
+echo "Creating S3 bucket: s3://${BUCKET_NAME} in region ${AWS_REGION}..."
+aws s3 mb "s3://${BUCKET_NAME}" --region "${AWS_REGION}"
 
-    <section id="about" style="margin-top: 40px;">
-      <h2>About This Project</h2>
-      <p>This is a simple static HTML website used to demonstrate static hosting using cloud storage.</p>
-    </section>
-  </main>
+# --- Step 2: Enable Static Website Hosting on the Bucket ---
+# This configures the bucket to serve content as a website.
+# It specifies the default index document and an optional error document.
+echo "Enabling static website hosting for bucket: ${BUCKET_NAME}..."
+if [ -n "${ERROR_DOCUMENT}" ]; then
+    aws s3 website "s3://${BUCKET_NAME}/" \
+        --index-document "${INDEX_DOCUMENT}" \
+        --error-document "${ERROR_DOCUMENT}"
+else
+    aws s3 website "s3://${BUCKET_NAME}/" \
+        --index-document "${INDEX_DOCUMENT}"
+fi
+echo "Static website hosting enabled."
 
-  <footer>
-    <p>© 2025 My Portfolio | Built with 💻 and ☁️</p>
-  </footer>
+# --- Step 3: Configure Bucket Policy for Public Read Access ---
+# By default, S3 buckets are private. For a static website,
+# you need to grant public read access to its objects.
+# This policy allows anyone (Principal: "*") to perform the "s3:GetObject" action
+# (read objects) on all objects ("/*") within your bucket.
+echo "Setting bucket policy for public read access..."
+aws s3api put-bucket-policy --bucket "${BUCKET_NAME}" --policy '{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "PublicReadGetObject",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::'"${BUCKET_NAME}"'/*"
+        }
+    ]
+}'
+echo "Bucket policy set to allow public read access."
 
-  <script>
-    function showMessage() {
-      document.getElementById('message').innerText = 'Thanks for clicking! This site is cloud-hosted!';
-    }
-  </script>
+# --- Step 4: Upload Your Website Files to the S3 Bucket ---
+# The 'cp' command copies files from your local directory to the S3 bucket.
+# '--recursive' ensures all files and subdirectories are copied.
+# '--acl public-read' explicitly sets permissions for uploaded objects to be publicly readable.
+echo "Uploading website files from ${LOCAL_WEBSITE_PATH} to s3://${BUCKET_NAME}/..."
+aws s3 cp "${LOCAL_WEBSITE_PATH}" "s3://${BUCKET_NAME}/" --recursive --acl public-read
+echo "Website files uploaded successfully."
 
-</body>
-</html>
+# --- Step 5: Retrieve Your Website Endpoint URL ---
+# This command fetches the website endpoint URL that S3 provides.
+echo "Fetching your static website endpoint..."
+WEBSITE_ENDPOINT=$(aws s3api get-bucket-website --bucket "${BUCKET_NAME}" --query 'WebsiteConfiguration.Endpoint' --output text)
+
+if [ -n "${WEBSITE_ENDPOINT}" ]; then
+    echo "--- Your Static Website is Now Live! ---"
+    echo "Access your website at: http://${WEBSITE_ENDPOINT}"
+    echo "Note: The endpoint is HTTP. For HTTPS, consider using AWS CloudFront."
+else
+    echo "Failed to retrieve the website endpoint. Please check your bucket configuration."
+fi
+
+echo "--- Deployment Complete ---"
+echo "You can now visit the URL to see your static website."
+echo "For custom domain setup (e.g., www.yourdomain.com), you'll need to configure AWS Route 53 or your DNS provider."
+
