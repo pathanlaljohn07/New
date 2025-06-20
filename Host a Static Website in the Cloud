@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Cloud Website</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f0f4f8;
+      margin: 0;
+      padding: 0;
+      text-align: center;
+    }
+
+    header, footer {
+      background-color: #004466;
+      color: white;
+      padding: 1em 0;
+    }
+
+    main {
+      padding: 2em;
+    }
+
+    a {
+      color: #ffeeaa;
+      text-decoration: none;
+      margin: 0 15px;
+      font-weight: bold;
+    }
+
+    button {
+      background-color: #007acc;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-top: 20px;
+    }
+
+    button:hover {
+      background-color: #005a99;
+    }
+
+    #message {
+      margin-top: 15px;
+      font-weight: bold;
+      color: #006600;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Welcome to My Cloud-Hosted Website 🌐</h1>
+    <nav>
+      <a href="#">Home</a>
+      <a href="#about">About</a>
+    </nav>
+  </header>
+
+  <main>
+    <p>This static website is hosted on the cloud using a storage bucket like AWS S3.</p>
+    <button onclick="showMessage()">Click Me</button>
+    <p id="message"></p>
+
+    <section id="about" style="margin-top: 40px;">
+      <h2>About This Project</h2>
+      <p>This is a simple static HTML website used to demonstrate static hosting using cloud storage.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>© 2025 My Portfolio | Built with 💻 and ☁️</p>
+  </footer>
+
+  <script>
+    function showMessage() {
+      document.getElementById('message').innerText = 'Thanks for clicking! This site is cloud-hosted!';
+    }
+  </script>
+
+</body>
+</html>
